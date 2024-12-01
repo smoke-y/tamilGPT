@@ -23,20 +23,23 @@ class CasualSelfAttention(nn.Module):
         y = nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
         y = y.transpose(1,2).contiguous().view(B, T, C)
         return self.proj(y)
-
-# Define the parameters
-batch_size = 2
-sequence_length_1 = 12
-sequence_length_2 = 24
-# Calculate the total number of elements needed
-total_elements = batch_size * sequence_length_1 * sequence_length_2
-# Generate a sequence of numbers from 1 to total_elements
-numbers = torch.arange(1, total_elements + 1, dtype=torch.float)
-# Reshape the tensor into the desired shape: (batch_size, sequence_length_1, sequence_length_2)
-numbers = numbers.view(batch_size, sequence_length_1, sequence_length_2)
-# Print the generated sequences
-print(numbers.size())
-
-config = Config()
-csa = CasualSelfAttention(config)
-csa.forward(numbers)
+class MLP(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.l1 = nn.Linear(config.embdim, config.embdim * 4)
+        self.act = nn.GELU()
+        self.l2 = nn.Linear(config.embdim * 4, config.embdim)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.l1(x)
+        x = self.act(x)
+        return self.l2(x)
+class Block(nn.Module):
+    def __init__(self, config: Config) -> None:
+        super().__init__()
+        self.ln1 = nn.LayerNorm(config.embdim)
+        self.attn = CasualSelfAttention(config)
+        self.ln2 = nn.LayerNorm(config.embdim)
+        self.mlp = MLP(config)
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x += self.attn(self.ln1(x))
+        return x + self.mlp(self.ln2(x))
