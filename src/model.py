@@ -1,14 +1,15 @@
 import torch
+import inspect
 import torch.nn as nn
 from dataclasses import dataclass
 
 @dataclass
 class Config:
-    nheads: int = 12
-    embdim: int = 768
-    layers: int = 12
-    maxseq: int = 1024
-    vocab:  int = 50257
+    nheads:  int = 12
+    embdim:  int = 768
+    layers:  int = 12
+    maxseq:  int = 1024
+    vocab:   int = 50257
 
 class CasualSelfAttention(nn.Module):
     def __init__(self, config: Config) -> None:
@@ -45,7 +46,7 @@ class Block(nn.Module):
         self.ln_2 = nn.LayerNorm(config.embdim)
         self.mlp = MLP(config)
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x += self.attn(self.ln_1(x))
+        x = x + self.attn(self.ln_1(x))
         return x + self.mlp(self.ln_2(x))
 class LoRa(nn.Module):
     def __init__(self, featureIn: int, featureOut: int, rank: int, alpha: float) -> None:
@@ -71,11 +72,11 @@ class GPT(nn.Module):
         self.transformer.wte.weight = self.lm_head.weight   #first and last share params
     @classmethod
     def from_pretrained(cls, model_type):
+        #SECTION - https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L131
         """Loads pretrained GPT-2 model weights from huggingface"""
-        #https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L131
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         from transformers import GPT2LMHeadModel
-        print("loading weights from pretrained gpt: %s" % model_type)
+        print("Loading weights from pretrained gpt: %s" % model_type)
 
         # layers, nheads and embdim are determined from model_type
         config_args = {
@@ -120,7 +121,7 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
                     
         return model
-    def applyLoRa(self, rank: int = 1, alpha: float = 1.0):
+    def applyLoRa(self, rank: int = 4, alpha: float = 32.0):
         with torch.no_grad():
             NonLoRaParam = 0
             LoRaParam = 0
@@ -134,6 +135,20 @@ class GPT(nn.Module):
     def freezeNonLoRa(self):
         for name, param in self.named_children():
             if "lora" not in name: param.requires_grad = False
+    def createOptimizer(self, weightDecay: float, lr: float, device: str):
+        decayParams = []
+        nonDecayParams = []
+        for name, param in self.named_parameters():
+            if param.requires_grad == False: continue
+            if param.dim() >= 2: decayParams.append(param)
+            else: nonDecayParams.append(param)
+        optimGroups = [
+            {"params": decayParams, "weight_decay": weightDecay},
+            {"params": nonDecayParams, "weight_decay": 0.0},
+        ]
+        fusedAdam = ("fused" in inspect.signature(torch.optim.AdamW).parameters) and (device == "cuda")
+        if fusedAdam: print("Using fused AdamW")
+        return torch.optim.AdamW(optimGroups, lr=lr, betas=(0.9, 0.95), eps=1e-8, fused=fusedAdam)
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
         assert T < self.config.maxseq, "sequence length > max sequence length"
@@ -145,4 +160,5 @@ class GPT(nn.Module):
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
         loss = None
+        if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
