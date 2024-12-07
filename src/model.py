@@ -26,7 +26,7 @@ class CasualSelfAttention(nn.Module):
         q = q.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
         k = k.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
         v = v.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
-        y = nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
+        y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
         y = y.transpose(1,2).contiguous().view(B, T, C)
         return self.c_proj(y)
 class MLP(nn.Module):

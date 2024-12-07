@@ -1,28 +1,13 @@
 import math
 import torch
 from model import *
-from datasets import load_dataset
+from os import listdir
 from transformers import GPT2Tokenizer
 
-class Chungus:
-    def __init__(self, B: int, T: int, tokenizer) -> None:
-        self.B, self.T= B, T
-        self.tokenizer = tokenizer
-    def chunk(self, toks):
-        length = len(toks) - 1
-        chunks = []
-        cursor = 0
-        off = self.B*self.T
-        while length > 1:
-            chunk = toks[cursor:cursor+off+1]
-            x = torch.tensor(chunk, dtype=torch.long)[:-1].view(self.B, self.T)
-            y = torch.tensor(chunk, dtype=torch.long)[1:].view(self.B, self.T)
-            chunks.append([x,y])
-            cursor += off
-            length -= off
-            if length < off: break
-        return chunks
-    
+EPOCH = 10
+B = 2
+T = 24
+
 max_lr = 6e-4
 min_lr = max_lr * 0.1
 warmup_steps = 715
@@ -41,23 +26,36 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
 
-deviceType = "cuda" if torch.cuda.is_available() else "cpu"
-print("Using", deviceType)
+files = ["data/"+f for f in listdir("data/")]
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("Using", device)
 #NOTE - vocab: 50000, but our gpt has 50257 embeddings
 tokenizer = GPT2Tokenizer.from_pretrained("Lagstill/GPT-2-Tamil")
-ds = load_dataset("uonlp/CulturaX", "ta", split="train", streaming=True)
-dc = Chungus(2, 6, None)
 model = GPT.from_pretrained("gpt2")
 model.applyLoRa()
 model.freezeNonLoRa()
-optimizer = model.createOptimizer(weightDecay=0.1, lr=6e-4, device="cpu")
-torch.autograd.set_detect_anomaly(True)
-for data in ds:
-    d = tokenizer.encode(data["text"])
-    chunks = dc.chunk(d)
-    for chunk in chunks:
-        pred, loss = model.forward(chunk[0], chunk[1])
-        optimizer.zero_grad()
-        print(loss)
-        loss.backward()
-        optimizer.step()
+model.to(device)
+optimizer = model.createOptimizer(weightDecay=0.1, lr=6e-4, device=device)
+
+x = torch.empty((B, T), dtype=torch.long, device=device)
+y = torch.empty((B, T), dtype=torch.long, device=device)
+off = B*T
+for epoch in range(EPOCH):
+    for file in files:
+        file = open(file, "r", encoding="utf8")
+        tokens = torch.tensor(tokenizer.encode(file.read()), device="cpu", dtype=torch.long)
+        file.close()
+        length = tokens.nelement() - 1
+        cursor = 0
+        while length > off:
+            chunk = tokens[cursor:cursor+off+1]
+            x.copy_(chunk[:-1].view(B, T))
+            y.copy_(chunk[1:].view(B, T))
+            cursor += off
+            length -= off
+
+            pred, loss = model.forward(x, y)
+            optimizer.zero_grad()
+            print(loss)
+            loss.backward()
+            optimizer.step()
