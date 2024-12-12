@@ -151,7 +151,7 @@ class GPT(nn.Module):
         return torch.optim.AdamW(optimGroups, lr=lr, betas=(0.9, 0.95), eps=1e-8, fused=fusedAdam)
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
-        assert T < self.config.maxseq, "sequence length > max sequence length"
+        assert T <= self.config.maxseq, "sequence length > max sequence length"
         pos = torch.arange(0, T, dtype=torch.long, device=x.device)
         posEmb = self.transformer.wpe(pos)
         tokEmb = self.transformer.wte(x)

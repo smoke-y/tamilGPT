@@ -1,12 +1,40 @@
+import os
 import math
 import torch
 from model import *
-from os import listdir
 from transformers import GPT2Tokenizer
 
 EPOCH = 10
-B = 2
-T = 24
+TOTAL_BATCH_SIZE = 524288
+B = 8
+T = 1024
+
+off = B*T
+gradeAccumulationSteps = TOTAL_BATCH_SIZE // (T*B)
+tokenizer = GPT2Tokenizer.from_pretrained("Lagstill/GPT-2-Tamil")
+if not os.path.exists("misc/"): os.makedirs("misc/")
+
+class Chungus:
+    def __init__(self) -> None:
+        self.filesCount = len(os.listdir("data/"))
+        self.fileId = 0
+        self.tokens = None
+        self.cursor = 0
+        self.loadCurFileId()
+    def loadCurFileId(self) -> None:
+        file = open(f"data/{self.fileId}.txt", "r", encoding="utf8")
+        self.tokens = torch.tensor(tokenizer.encode(file.read()), device="cpu", dtype=torch.long)
+        file.close()
+        self.cursor = 0
+    def nextChunk(self):
+        if self.tokens.nelement() - self.cursor > off+1:
+            chunk = self.tokens[self.cursor:self.cursor+off+1]
+            self.cursor += off
+            return [chunk[:-1].view(B, T), chunk[1:].view(B, T)]
+        else:
+            self.fileId = (self.fileId + 1) % self.filesCount
+            self.loadCurFileId()
+            return self.nextChunk()
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
@@ -26,36 +54,45 @@ def get_lr(it):
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
 
-files = ["data/"+f for f in listdir("data/")]
-device = "cuda" if torch.cuda.is_available() else "cpu"
+deviceType = "cuda" if torch.cuda.is_available() else "cpu"
+device = torch.device(deviceType)
+torch.set_float32_matmul_precision("high")
 print("Using", device)
 #NOTE - vocab: 50000, but our gpt has 50257 embeddings
-tokenizer = GPT2Tokenizer.from_pretrained("Lagstill/GPT-2-Tamil")
 model = GPT.from_pretrained("gpt2")
 model.applyLoRa()
 model.freezeNonLoRa()
 model.to(device)
+model = torch.compile(model)
 optimizer = model.createOptimizer(weightDecay=0.1, lr=6e-4, device=device)
 
+chunugs = Chungus()
 x = torch.empty((B, T), dtype=torch.long, device=device)
 y = torch.empty((B, T), dtype=torch.long, device=device)
 off = B*T
-for epoch in range(EPOCH):
-    for file in files:
-        file = open(file, "r", encoding="utf8")
-        tokens = torch.tensor(tokenizer.encode(file.read()), device="cpu", dtype=torch.long)
-        file.close()
-        length = tokens.nelement() - 1
-        cursor = 0
-        while length > off:
-            chunk = tokens[cursor:cursor+off+1]
-            x.copy_(chunk[:-1].view(B, T))
-            y.copy_(chunk[1:].view(B, T))
-            cursor += off
-            length -= off
-
-            pred, loss = model.forward(x, y)
-            optimizer.zero_grad()
-            print(loss)
-            loss.backward()
+step = 0
+log = open("misc/trace.log", "w+")
+try:
+    for epoch in range(EPOCH):
+        for step in range(max_steps):
+            for microStep in range(gradeAccumulationSteps):
+                xChunk,yChunk = chunugs.nextChunk()
+                x.copy_(xChunk)
+                y.copy_(yChunk)
+                
+                with torch.autocast(device_type=deviceType, dtype=torch.bfloat16):
+                    pred, loss = model.forward(x, y)
+                loss = loss / gradeAccumulationSteps
+                optimizer.zero_grad()
+                loss.backward()
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if step <= max_steps+1:
+                lr = get_lr(step)
+                for param_group in optimizer.param_groups: param_group["lr"] = lr
+                step += 1
             optimizer.step()
+            log.write(f"{loss.cpu().detach().numpy()}|{norm.cpu().detach().numpy()}")
+except Exception as e:
+    print(e.with_traceback())
+
+log.close()
