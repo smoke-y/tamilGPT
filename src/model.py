@@ -54,10 +54,7 @@ class LoRa(nn.Module):
         self.lora_a = nn.Parameter(torch.zeros(rank, featureOut))
         self.lora_b = nn.Parameter(torch.zeros(featureIn, rank))
         self.scale = alpha / rank
-        self.enabled = True
-    def forward(self, originalWeight: torch.Tensor) -> torch.Tensor:
-        if self.enabled: return originalWeight + (self.lora_b @ self.lora_a)*self.scale
-        else: return originalWeight
+    def forward(self, originalWeight: torch.Tensor) -> torch.Tensor: return originalWeight + (self.lora_b @ self.lora_a)*self.scale
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -162,3 +159,23 @@ class GPT(nn.Module):
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
+    def saveLoRaWeights(self, fileName: str):
+        loraWeights = {}
+        for name, layer in self.named_children():
+            if hasattr(layer, "parameterizations") and "weight" in layer.parameterizations:
+                loraWeights[name] = {
+                    "lora_a": layer.parameterizations["weight"][0].lora_a.detach().numpy(),
+                    "lora_b": layer.parameterizations["weight"][0].lora_b.detach().numpy(),
+                }
+        torch.save(loraWeights, fileName)
+        print("LoRa weights saved to", fileName)
+    def loadLoRaWeights(self, fileName: str):
+        loraWeights = torch.load(fileName, weights_only=True)
+        for name, layer in self.named_children():
+            if hasattr(layer, "parameterizations") and "weight" in layer.parameterizations:
+                lora_a = loraWeights[name]["lora_a"].to(layer.weight.device)
+                lora_b = loraWeights[name]["lora_b"].to(layer.weight.device)
+
+                layer.parameterizations["weight"][0].lora_a.data.copy_(lora_a)
+                layer.parameterizations["weight"][0].lora_b.data.copy_(lora_b)
+        print("LoRa weights loaded from", fileName)

@@ -6,7 +6,7 @@ from transformers import GPT2Tokenizer
 
 EPOCH = 10
 TOTAL_BATCH_SIZE = 524288
-B = 8
+B = 2
 T = 1024
 
 off = B*T
@@ -92,7 +92,5 @@ try:
                 step += 1
             optimizer.step()
             log.write(f"{loss.cpu().detach().numpy()}|{norm.cpu().detach().numpy()}")
-except Exception as e:
-    print(e.with_traceback())
-
-log.close()
+except Exception as e: print(e.with_traceback())
+finally: log.close()
