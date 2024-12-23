@@ -119,19 +119,34 @@ class GPT(nn.Module):
                     
         return model
     def applyLoRa(self, rank: int = 4, alpha: float = 32.0):
+        def apply_lora_to_layer(layer):
+            nonlocal NonLoRaParam, LoRaParam
+            if hasattr(layer, "weight"):
+                layer.requires_grad = False
+                NonLoRaParam += layer.weight.nelement()
+                if hasattr(layer, "bias"):
+                    if layer.bias is not None: NonLoRaParam += layer.bias.nelement()
+                if len(layer.weight.shape) == 1: return
+                torch.nn.utils.parametrize.register_parametrization(
+                    layer, "weight", LoRa(*layer.weight.shape, rank, alpha)
+                )
+                lora_param = layer.parametrizations["weight"][0]
+                LoRaParam += lora_param.lora_a.nelement() + lora_param.lora_b.nelement()
+
+        def recurse_and_apply(module):
+            for name, child in module.named_children(): recurse_and_apply(child)
+            if hasattr(module, "weight"): apply_lora_to_layer(module)
+
         with torch.no_grad():
             NonLoRaParam = 0
             LoRaParam = 0
-            for name, layer in self.named_children():
-                if hasattr(layer, "weight"):
-                    NonLoRaParam += layer.weight.nelement()
-                    if layer.bias: NonLoRaParam += layer.bias.nelement()
-                    torch.nn.utils.parametrize.register_parametrization(layer, "weight", LoRa(*layer.weight.shape, rank, alpha))
-                    LoRaParam += layer.parametrizations["weight"][0].lora_a.nelement() + layer.parametrizations["weight"][0].lora_b.nelement()
-            print(f"Original param count: {NonLoRaParam}\nLoRa: {LoRaParam}\nTotal: {LoRaParam + NonLoRaParam}\nIncrement: {(LoRaParam/NonLoRaParam)*100}%")
-    def freezeNonLoRa(self):
-        for name, param in self.named_children():
-            if "lora" not in name: param.requires_grad = False
+            recurse_and_apply(self)
+            print(
+                f"Original param count: {NonLoRaParam}\n"
+                f"LoRa: {LoRaParam}\n"
+                f"Total: {LoRaParam + NonLoRaParam}\n"
+                f"Increment: {(LoRaParam / NonLoRaParam) * 100:.2f}%"
+            )
     def createOptimizer(self, weightDecay: float, lr: float, device: str):
         decayParams = []
         nonDecayParams = []

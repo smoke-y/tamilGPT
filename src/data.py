@@ -1,7 +1,24 @@
 import os
 import re
 import emoji
+from sys import argv
 from datasets import load_dataset
+
+if "upload" in argv:
+    from huggingface_hub import HfApi
+    print("uploading...")
+
+    REPO_ID = "0VISH0/TamilText"
+    UPLOAD_DIR = "data/"
+
+    HfApi().upload_folder(
+        repo_id=REPO_ID,
+        repo_type="dataset",
+        folder_path=UPLOAD_DIR,
+        multi_commits=True,
+        multi_commits_verbose=True
+    )
+    exit()
 
 FILE_SIZE = 0.01         #GB. Each data file is FILE_SIZE big
 DATASET_SIZE = 11        #GB. Size of the entire dataset
