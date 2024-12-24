@@ -14,8 +14,9 @@ torch.set_float32_matmul_precision("high")
 print("Using", device)
 model = GPT.from_pretrained("gpt2")
 model.applyLoRa()
+model.loadLoRaWeights("trial.lora")
 model.to(device)
-#model = torch.compile(model)
+model = torch.compile(model)
 
 with torch.no_grad():
     sampleRNG = torch.Generator(device=device)

@@ -64,7 +64,6 @@ print("Using", device)
 #NOTE - vocab: 50000, but our gpt has 50257 embeddings
 model = GPT.from_pretrained("gpt2")
 model.applyLoRa()
-model.freezeNonLoRa()
 if os.path.exists("misc/weights.lora"): model.loadLoRaWeights("misc/weights.lora")
 model.to(device)
 model = torch.compile(model)

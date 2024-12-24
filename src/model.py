@@ -119,7 +119,7 @@ class GPT(nn.Module):
                     
         return model
     def applyLoRa(self, rank: int = 4, alpha: float = 32.0):
-        def apply_lora_to_layer(layer):
+        def applyLoraToLayer(layer):
             nonlocal NonLoRaParam, LoRaParam
             if hasattr(layer, "weight"):
                 layer.requires_grad = False
@@ -130,17 +130,17 @@ class GPT(nn.Module):
                 torch.nn.utils.parametrize.register_parametrization(
                     layer, "weight", LoRa(*layer.weight.shape, rank, alpha)
                 )
-                lora_param = layer.parametrizations["weight"][0]
-                LoRaParam += lora_param.lora_a.nelement() + lora_param.lora_b.nelement()
+                loraParam = layer.parametrizations["weight"][0]
+                LoRaParam += loraParam.lora_a.nelement() + loraParam.lora_b.nelement()
 
-        def recurse_and_apply(module):
-            for name, child in module.named_children(): recurse_and_apply(child)
-            if hasattr(module, "weight"): apply_lora_to_layer(module)
+        def recurseAndApply(module):
+            for name, child in module.named_children(): recurseAndApply(child)
+            if hasattr(module, "weight"): applyLoraToLayer(module)
 
         with torch.no_grad():
             NonLoRaParam = 0
             LoRaParam = 0
-            recurse_and_apply(self)
+            recurseAndApply(self)
             print(
                 f"Original param count: {NonLoRaParam}\n"
                 f"LoRa: {LoRaParam}\n"
@@ -176,21 +176,12 @@ class GPT(nn.Module):
         return logits, loss
     def saveLoRaWeights(self, fileName: str):
         loraWeights = {}
-        for name, layer in self.named_children():
-            if hasattr(layer, "parameterizations") and "weight" in layer.parameterizations:
-                loraWeights[name] = {
-                    "lora_a": layer.parameterizations["weight"][0].lora_a.detach().numpy(),
-                    "lora_b": layer.parameterizations["weight"][0].lora_b.detach().numpy(),
-                }
+        for name, layer in self.named_parameters():
+            if name.endswith("lora_a") or name.endswith("lora_b"): loraWeights[name] = layer.detach().cpu()
         torch.save(loraWeights, fileName)
         print("LoRa weights saved to", fileName)
     def loadLoRaWeights(self, fileName: str):
         loraWeights = torch.load(fileName, weights_only=True)
-        for name, layer in self.named_children():
-            if hasattr(layer, "parameterizations") and "weight" in layer.parameterizations:
-                lora_a = loraWeights[name]["lora_a"].to(layer.weight.device)
-                lora_b = loraWeights[name]["lora_b"].to(layer.weight.device)
-
-                layer.parameterizations["weight"][0].lora_a.data.copy_(lora_a)
-                layer.parameterizations["weight"][0].lora_b.data.copy_(lora_b)
+        for name, layer in self.named_parameters():
+            if name.endswith("lora_a") or name.endswith("lora_b"): layer.data.copy_(loraWeights[name])
         print("LoRa weights loaded from", fileName)
