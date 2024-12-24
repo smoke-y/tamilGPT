@@ -14,7 +14,7 @@ torch.set_float32_matmul_precision("high")
 print("Using", device)
 model = GPT.from_pretrained("gpt2")
 model.applyLoRa()
-model.loadLoRaWeights("trial.lora")
+model.loadLoRaWeights("misc/weights.lora")
 model.to(device)
 model = torch.compile(model)
 
