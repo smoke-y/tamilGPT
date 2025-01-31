@@ -6,3 +6,4 @@ Implement Andrej Karptathy's <a href="https://youtu.be/l8pRSuU81PU?si=xJg7CMwFCN
 
 We apply these changes to nanoGPT<br>
 * Rotary embedding
+* Normalize Q,K

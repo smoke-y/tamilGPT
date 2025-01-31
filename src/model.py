@@ -27,7 +27,7 @@ class Rotary(nn.Module):
         y1 = x1 * cos + x2 * sin
         y2 = x1 * (-sin) + x2 * cos
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
-
+def norm(x: torch.Tensor) -> torch.Tensor: return nn.functional.rms_norm(x, (x.size(-1),))
 class CasualSelfAttention(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -45,6 +45,7 @@ class CasualSelfAttention(nn.Module):
         q = q.view(B, T, self.nheads, C // self.nheads)
         k = k.view(B, T, self.nheads, C // self.nheads)
         v = v.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
+        q,k = norm(q), norm(k)
         q,k = self.rotary(q).transpose(1,2), self.rotary(k).transpose(1,2)
         y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
         y = y.transpose(1,2).contiguous().view(B, T, C)
