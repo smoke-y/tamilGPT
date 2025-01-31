@@ -1,4 +1,5 @@
 import torch
+import inspect
 import torch.nn as nn
 from dataclasses import dataclass
 
@@ -94,6 +95,20 @@ class GPT(nn.Module):
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
+    def create_optimizer(self, weightDecay: float, lr: float, device: str):
+        decayParams = []
+        nonDecayParams = []
+        for name, param in self.named_parameters():
+            if param.requires_grad == False: continue
+            if param.dim() >= 2: decayParams.append(param)
+            else: nonDecayParams.append(param)
+        optimGroups = [
+            {"params": decayParams, "weight_decay": weightDecay},
+            {"params": nonDecayParams, "weight_decay": 0.0},
+        ]
+        fusedAdam = ("fused" in inspect.signature(torch.optim.AdamW).parameters) and (device == "cuda")
+        if fusedAdam: print("Using fused AdamW")
+        return torch.optim.AdamW(optimGroups, lr=lr, betas=(0.9, 0.95), eps=1e-8, fused=fusedAdam)
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         for _ in range(max_new_tokens):

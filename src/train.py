@@ -53,22 +53,16 @@ def get_lr(it):
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
     return min_lr + coeff * (max_lr - min_lr)
-def optimizerHook(param):
-    optimizer.step()
-    optimizer.zero_grad()
 
 deviceType = "cuda" if torch.cuda.is_available() else "cpu"
 device = torch.device(deviceType)
 torch.set_float32_matmul_precision("high")
 print("Using", device)
 #NOTE - vocab: 50000, but our gpt has 50257 embeddings
-model = GPT.from_pretrained("gpt2")
-model.applyLoRa()
-if os.path.exists("misc/weights.lora"): model.loadLoRaWeights("misc/weights.lora")
+model = GPT(Config())
 model.to(device)
 model = torch.compile(model)
-optimizer = model.createOptimizer(weightDecay=0.1, lr=6e-4, device=device)
-for p in model.parameters(): p.register_post_accumulate_grad_hook(optimizerHook)
+optimizer = model.create_optimizer(weightDecay=0.1, lr=6e-4, device=device)
 optimizer.zero_grad()
 
 chunugs = Chungus()
@@ -77,25 +71,21 @@ y = torch.empty((B, T), dtype=torch.long, device=device)
 off = B*T
 step = 0
 log = open("misc/trace.log", "w+")
-try:
-    for epoch in range(EPOCH):
-        for step in range(max_steps):
-            if step <= max_steps+1:
-                lr = get_lr(step)
-                for param_group in optimizer.param_groups: param_group["lr"] = lr
-                step += 1
-            lossAcum = 0.0
-            for microStep in range(gradeAccumulationSteps):
-                xChunk,yChunk = chunugs.nextChunk()
-                x.copy_(xChunk)
-                y.copy_(yChunk)
-                with torch.autocast(device_type=deviceType, dtype=torch.bfloat16):
-                    pred, loss = model.forward(x, y)
-                loss /= gradeAccumulationSteps
-                lossAcum += loss.detach().cpu().numpy()
-                loss.backward()
-            log.write(f"{lossAcum}\n")
-except Exception as e: print(e.with_traceback())
-finally:
-    model.saveLoRaWeights("misc/weights.lora")
-    log.close()
+for epoch in range(EPOCH):
+    for step in range(max_steps):
+        if step <= max_steps+1:
+            lr = get_lr(step)
+            for param_group in optimizer.param_groups: param_group["lr"] = lr
+            step += 1
+        lossAcum = 0.0
+        for microStep in range(gradeAccumulationSteps):
+            xChunk,yChunk = chunugs.nextChunk()
+            x.copy_(xChunk)
+            y.copy_(yChunk)
+            with torch.autocast(device_type=deviceType, dtype=torch.bfloat16):
+                pred, loss = model.forward(x, y)
+            loss /= gradeAccumulationSteps
+            lossAcum += loss.detach().cpu().numpy()
+            loss.backward()
+        optimizer.step()
+        log.write(f"{lossAcum}\n")
