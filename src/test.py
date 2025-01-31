@@ -12,7 +12,7 @@ deviceType = "cuda" if torch.cuda.is_available() else "cpu"
 device = torch.device(deviceType)
 torch.set_float32_matmul_precision("high")
 print("Using", device)
-model = GPT.from_pretrained("gpt2")
+model = GPT(Config())
 model.to(device)
 model = torch.compile(model)
 

@@ -1,5 +1,4 @@
 import torch
-import inspect
 import torch.nn as nn
 from dataclasses import dataclass
 
@@ -7,25 +6,46 @@ from dataclasses import dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 12
+    layers:  int = 1
     maxseq:  int = 1024
     vocab:   int = 50257
+
+class Rotary(nn.Module):
+    def __init__(self, dim: int, max_seq_len=65536):
+        super().__init__()
+        # half-truncate RoPE by @YouJiacheng (w/ base freq tuning)
+        angular_freq = (1 / 1024) ** torch.linspace(0, 1, steps=dim//4, dtype=torch.float32)
+        angular_freq = torch.cat([angular_freq, angular_freq.new_zeros(dim//4)])
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        theta = torch.einsum("i,j -> ij", t, angular_freq)
+        self.cos = nn.Buffer(theta.cos(), persistent=False)
+        self.sin = nn.Buffer(theta.sin(), persistent=False)
+    def forward(self, x_BTHD: torch.Tensor):
+        assert self.cos.size(0) >= x_BTHD.size(-3)
+        cos, sin = self.cos[None, :x_BTHD.size(-3), None, :], self.sin[None, :x_BTHD.size(-3), None, :]
+        x1, x2 = x_BTHD.to(dtype=torch.float32).chunk(2, dim=-1)
+        y1 = x1 * cos + x2 * sin
+        y2 = x1 * (-sin) + x2 * cos
+        return torch.cat((y1, y2), 3).type_as(x_BTHD)
 
 class CasualSelfAttention(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
-        assert config.embdim % config.nheads == 0
+        dim = config.embdim
+        assert dim % config.nheads == 0
         #q,k,v weights
-        self.c_attn = nn.Linear(config.embdim, 3*config.embdim)
-        self.c_proj = nn.Linear(config.embdim, config.embdim)
+        self.c_attn = nn.Linear(dim, 3*dim)
+        self.c_proj = nn.Linear(dim, dim)
+        self.rotary = Rotary(dim // config.nheads)
         self.nheads = config.nheads
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B,T,C = x.size() #Batch, Seq, Emb-dim
         qkv = self.c_attn(x)
         q,k,v = qkv.split(C, dim=2)
-        q = q.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
-        k = k.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
+        q = q.view(B, T, self.nheads, C // self.nheads)
+        k = k.view(B, T, self.nheads, C // self.nheads)
         v = v.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
+        q,k = self.rotary(q).transpose(1,2), self.rotary(k).transpose(1,2)
         y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
         y = y.transpose(1,2).contiguous().view(B, T, C)
         return self.c_proj(y)
@@ -60,71 +80,6 @@ class GPT(nn.Module):
         ))
         self.lm_head = nn.Linear(config.embdim, config.vocab, bias=False)
         self.transformer.wte.weight = self.lm_head.weight   #first and last share params
-    @classmethod
-    def from_pretrained(cls, model_type):
-        #SECTION - https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L131
-        """Loads pretrained GPT-2 model weights from huggingface"""
-        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
-        from transformers import GPT2LMHeadModel
-        print("Loading weights from pretrained gpt: %s" % model_type)
-
-        # layers, nheads and embdim are determined from model_type
-        config_args = {
-            'gpt2':         dict(layers=12, nheads=12, embdim=768),  # 124M params
-            'gpt2-medium':  dict(layers=24, nheads=16, embdim=1024), # 350M params
-            'gpt2-large':   dict(layers=36, nheads=20, embdim=1280), # 774M params
-            'gpt2-xl':      dict(layers=48, nheads=25, embdim=1600), # 1558M params
-        }[model_type]
-        config_args['vocab'] = 50257 # always 50257 for GPT model checkpoints
-        config_args['maxseq'] = 1024 # always 1024 for GPT model checkpoints
-        # create a from-scratch initialized minGPT model
-        config = Config(**config_args)
-        model = GPT(config)
-        sd = model.state_dict()
-        sd_keys = sd.keys()
-        sd_keys = [k for k in sd_keys if not k.endswith('.attn.bias')] # discard this mask / buffer, not a param
-
-        # init a huggingface/transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
-        sd_hf = model_hf.state_dict()
-
-        # copy while ensuring all of the parameters are aligned and match in names and shapes
-        sd_keys_hf = sd_hf.keys()
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.masked_bias')] # ignore these, just a buffer
-        sd_keys_hf = [k for k in sd_keys_hf if not k.endswith('.attn.bias')] # same, just the mask (buffer)
-        transposed = ['attn.c_attn.weight', 'attn.c_proj.weight', 'mlp.c_fc.weight', 'mlp.c_proj.weight']
-        #for i in sd_keys_hf: print(i)
-        #for i in sd_keys: print(i)
-        # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla Linear
-        # this means that we have to transpose these weights when we import them
-        assert len(sd_keys_hf) == len(sd_keys), f"mismatched keys: {len(sd_keys_hf)} != {len(sd_keys)}"
-        for k in sd_keys_hf:
-            if any(k.endswith(w) for w in transposed):
-                # special treatment for the Conv1D weights we need to transpose
-                assert sd_hf[k].shape[::-1] == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k].t())
-            else:
-                # vanilla copy over the other parameters
-                assert sd_hf[k].shape == sd[k].shape
-                with torch.no_grad():
-                    sd[k].copy_(sd_hf[k])
-                    
-        return model
-    def createOptimizer(self, weightDecay: float, lr: float, device: str):
-        decayParams = []
-        nonDecayParams = []
-        for name, param in self.named_parameters():
-            if param.requires_grad == False: continue
-            if param.dim() >= 2: decayParams.append(param)
-            else: nonDecayParams.append(param)
-        optimGroups = [
-            {"params": decayParams, "weight_decay": weightDecay},
-            {"params": nonDecayParams, "weight_decay": 0.0},
-        ]
-        fusedAdam = ("fused" in inspect.signature(torch.optim.AdamW).parameters) and (device == "cuda")
-        if fusedAdam: print("Using fused AdamW")
-        return torch.optim.AdamW(optimGroups, lr=lr, betas=(0.9, 0.95), eps=1e-8, fused=fusedAdam)
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
         assert T <= self.config.maxseq, "sequence length > max sequence length"
