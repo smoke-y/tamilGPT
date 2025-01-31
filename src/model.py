@@ -48,13 +48,6 @@ class Block(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x + self.attn(self.ln_1(x))
         return x + self.mlp(self.ln_2(x))
-class LoRa(nn.Module):
-    def __init__(self, featureIn: int, featureOut: int, rank: int, alpha: float) -> None:
-        super().__init__() 
-        self.lora_a = nn.Parameter(torch.zeros(rank, featureOut))
-        self.lora_b = nn.Parameter(torch.zeros(featureIn, rank))
-        self.scale = alpha / rank
-    def forward(self, originalWeight: torch.Tensor) -> torch.Tensor: return originalWeight + (self.lora_b @ self.lora_a)*self.scale
 class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -118,35 +111,6 @@ class GPT(nn.Module):
                     sd[k].copy_(sd_hf[k])
                     
         return model
-    def applyLoRa(self, rank: int = 4, alpha: float = 32.0):
-        def applyLoraToLayer(layer):
-            nonlocal NonLoRaParam, LoRaParam
-            if hasattr(layer, "weight"):
-                layer.requires_grad = False
-                NonLoRaParam += layer.weight.nelement()
-                if hasattr(layer, "bias"):
-                    if layer.bias is not None: NonLoRaParam += layer.bias.nelement()
-                if len(layer.weight.shape) == 1: return
-                torch.nn.utils.parametrize.register_parametrization(
-                    layer, "weight", LoRa(*layer.weight.shape, rank, alpha)
-                )
-                loraParam = layer.parametrizations["weight"][0]
-                LoRaParam += loraParam.lora_a.nelement() + loraParam.lora_b.nelement()
-
-        def recurseAndApply(module):
-            for name, child in module.named_children(): recurseAndApply(child)
-            if hasattr(module, "weight"): applyLoraToLayer(module)
-
-        with torch.no_grad():
-            NonLoRaParam = 0
-            LoRaParam = 0
-            recurseAndApply(self)
-            print(
-                f"Original param count: {NonLoRaParam}\n"
-                f"LoRa: {LoRaParam}\n"
-                f"Total: {LoRaParam + NonLoRaParam}\n"
-                f"Increment: {(LoRaParam / NonLoRaParam) * 100:.2f}%"
-            )
     def createOptimizer(self, weightDecay: float, lr: float, device: str):
         decayParams = []
         nonDecayParams = []
@@ -174,14 +138,16 @@ class GPT(nn.Module):
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
-    def saveLoRaWeights(self, fileName: str):
-        loraWeights = {}
-        for name, layer in self.named_parameters():
-            if name.endswith("lora_a") or name.endswith("lora_b"): loraWeights[name] = layer.detach().cpu()
-        torch.save(loraWeights, fileName)
-        print("LoRa weights saved to", fileName)
-    def loadLoRaWeights(self, fileName: str):
-        loraWeights = torch.load(fileName, weights_only=True)
-        for name, layer in self.named_parameters():
-            if name.endswith("lora_a") or name.endswith("lora_b"): layer.data.copy_(loraWeights[name])
-        print("LoRa weights loaded from", fileName)
+    @torch.no_grad()
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+        for _ in range(max_new_tokens):
+            idx_cond = idx if idx.size(1) <= self.config.maxseq else idx[:, -self.config.maxseq:]
+            logits, _ = self(idx_cond)
+            logits = logits[:, -1, :] / temperature
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            probs = nn.functional.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)
+            idx = torch.cat((idx, idx_next), dim=1)
+        return idx
