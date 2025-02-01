@@ -39,6 +39,7 @@ class CasualSelfAttention(nn.Module):
         self.c_proj = nn.Linear(dim, dim)
         self.rotary = Rotary(dim // config.nheads)
         self.nheads = config.nheads
+        self.attn_scale = 0.12
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B,T,C = x.size() #Batch, Seq, Emb-dim
         qkv = self.c_attn(x)
@@ -48,7 +49,7 @@ class CasualSelfAttention(nn.Module):
         v = v.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
         q,k = norm(q), norm(k)
         q,k = self.rotary(q).transpose(1,2), self.rotary(k).transpose(1,2)
-        y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True)
+        y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True, scale=self.attn_scale)
         y = y.transpose(1,2).contiguous().view(B, T, C)
         return self.c_proj(y)
 class MLP(nn.Module):
