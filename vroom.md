@@ -8,4 +8,5 @@ We apply these changes to nanoGPT<br>
 * <a href="https://arxiv.org/abs/2104.09864">Rotary embedding</a>
 * <a href="https://arxiv.org/abs/2010.04245">Normalize Q,K</a>
 * <a href="https://arxiv.org/abs/2109.08668v2">ReLu^2</a>
-* Uniform weight initialization
+* Uniform and zero weight initialization
+* Skip connections

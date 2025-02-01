@@ -8,7 +8,7 @@ from dataclasses import dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 1
+    layers:  int = 2
     maxseq:  int = 1024
     vocab:   int = 50257
 
@@ -49,6 +49,7 @@ class CasualSelfAttention(nn.Module):
         #q,k,v weights
         self.c_attn = nn.Linear(dim, 3*dim)
         self.c_proj = CastedLinear(dim, dim)
+        self.c_proj.weight.detach().zero_()
         self.rotary = Rotary(dim // config.nheads)
         self.nheads = config.nheads
         self.attn_scale = 0.12
@@ -71,7 +72,7 @@ class MLP(nn.Module):
         hdim = 4 * dim
         self.c_fc = CastedLinear(dim, hdim)
         self.c_proj = CastedLinear(hdim, dim)
-        self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
+        self.c_proj.weight.detach().zero_()
     def forward(self, x: torch.Tensor):
         x = self.c_fc(x)
         return self.c_proj(F.relu(x).square())
@@ -94,13 +95,23 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.layers)]),
             ln_f = nn.LayerNorm(config.embdim),
         ))
-        self.lm_head = CastedLinear(config.embdim, next_multiple_of_n(config.vocab, 128))
+        self.lm_head = CastedLinear(config.embdim, next_multiple_of_n(config.vocab, n=128))
+        self.lm_head.weight.detach().zero_()
+        self.num_encoding_layers = config.layers // 2
+        self.num_decoding_layers = config.layers - self.num_encoding_layers
+        self.skip_weights = nn.Parameter(torch.ones(self.num_decoding_layers))
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
         assert T <= self.config.maxseq, "sequence length > max sequence length"
-        x = self.transformer.wte(x)
-        for block in self.transformer.h: x = block(x)
-        x = self.transformer.ln_f(x)
+        skip_connections = []
+        x = norm(self.transformer.wte(x))
+        for i in range(self.num_encoding_layers):
+            x = self.transformer.h[i](x)
+            skip_connections.append(x)
+        for i in range(self.num_decoding_layers):
+            x = x + self.skip_weights[i] * skip_connections.pop()
+            x = self.transformer.h[self.num_encoding_layers+i](x)
+        x = self.transformer.ln_f(norm(x))
         logits = self.lm_head(x)
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
