@@ -37,7 +37,10 @@ class Rotary(nn.Module):
         y1 = x1 * cos + x2 * sin
         y2 = x1 * (-sin) + x2 * cos
         return torch.cat((y1, y2), 3).type_as(x_BTHD)
+
 def norm(x: torch.Tensor) -> torch.Tensor: return nn.functional.rms_norm(x, (x.size(-1),))
+def next_multiple_of_n(v: float | int, *, n: int): return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
+
 class CasualSelfAttention(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -91,8 +94,7 @@ class GPT(nn.Module):
             h = nn.ModuleList([Block(config) for _ in range(config.layers)]),
             ln_f = nn.LayerNorm(config.embdim),
         ))
-        self.lm_head = nn.Linear(config.embdim, config.vocab, bias=False)
-        self.transformer.wte.weight = self.lm_head.weight   #first and last share params
+        self.lm_head = CastedLinear(config.embdim, next_multiple_of_n(config.vocab, 128))
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
         assert T <= self.config.maxseq, "sequence length > max sequence length"
