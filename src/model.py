@@ -1,6 +1,7 @@
 import torch
 import inspect
 import torch.nn as nn
+import torch.nn.functional as F
 from dataclasses import dataclass
 
 @dataclass
@@ -10,6 +11,14 @@ class Config:
     layers:  int = 1
     maxseq:  int = 1024
     vocab:   int = 50257
+
+class CastedLinear(nn.Linear):
+    def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
+    def reset_parameters(self) -> None:
+        std = 0.5 * (self.in_features ** -0.5) # 0.5 is a bit better than the default 1/sqrt(3)
+        bound = (3 ** 0.5) * std
+        with torch.no_grad(): self.weight.uniform_(-bound, bound)
+    def forward(self, x: torch.Tensor): return F.linear(x, self.weight.type_as(x))
 
 class Rotary(nn.Module):
     def __init__(self, dim: int, max_seq_len=65536):
@@ -36,7 +45,7 @@ class CasualSelfAttention(nn.Module):
         assert dim % config.nheads == 0
         #q,k,v weights
         self.c_attn = nn.Linear(dim, 3*dim)
-        self.c_proj = nn.Linear(dim, dim)
+        self.c_proj = CastedLinear(dim, dim)
         self.rotary = Rotary(dim // config.nheads)
         self.nheads = config.nheads
         self.attn_scale = 0.12
@@ -49,18 +58,20 @@ class CasualSelfAttention(nn.Module):
         v = v.view(B, T, self.nheads, C // self.nheads).transpose(1,2)
         q,k = norm(q), norm(k)
         q,k = self.rotary(q).transpose(1,2), self.rotary(k).transpose(1,2)
-        y = torch.nn.functional.scaled_dot_product_attention(q,k,v,is_causal=True, scale=self.attn_scale)
+        y = F.scaled_dot_product_attention(q,k,v,is_causal=True, scale=self.attn_scale)
         y = y.transpose(1,2).contiguous().view(B, T, C)
         return self.c_proj(y)
 class MLP(nn.Module):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config):
         super().__init__()
-        self.c_fc = nn.Linear(config.embdim, config.embdim * 4)
-        self.act = nn.GELU()
-        self.c_proj = nn.Linear(config.embdim * 4, config.embdim)
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        dim = config.embdim
+        hdim = 4 * dim
+        self.c_fc = CastedLinear(dim, hdim)
+        self.c_proj = CastedLinear(hdim, dim)
+        self.c_proj.weight.detach().zero_() # zero init suggested by @Grad62304977
+    def forward(self, x: torch.Tensor):
         x = self.c_fc(x)
-        return self.c_proj(self.act(x))
+        return self.c_proj(F.relu(x).square())
 class Block(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
@@ -77,7 +88,6 @@ class GPT(nn.Module):
         self.config = config
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab, config.embdim),
-            wpe = nn.Embedding(config.maxseq, config.embdim),
             h = nn.ModuleList([Block(config) for _ in range(config.layers)]),
             ln_f = nn.LayerNorm(config.embdim),
         ))
@@ -86,10 +96,7 @@ class GPT(nn.Module):
     def forward(self, x: torch.Tensor, groundTruth = None):
         B, T = x.size()
         assert T <= self.config.maxseq, "sequence length > max sequence length"
-        pos = torch.arange(0, T, dtype=torch.long, device=x.device)
-        posEmb = self.transformer.wpe(pos)
-        tokEmb = self.transformer.wte(x)
-        x = tokEmb + posEmb
+        x = self.transformer.wte(x)
         for block in self.transformer.h: x = block(x)
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
