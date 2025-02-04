@@ -1,18 +1,11 @@
 import os
-import math
 import torch
 from model import *
 from transformers import GPT2Tokenizer
 
-EPOCH = 10
-TOTAL_BATCH_SIZE = 524288
-B = 2
-T = 1024
-
-off = B*T
-gradeAccumulationSteps = TOTAL_BATCH_SIZE // (T*B)
 tokenizer = GPT2Tokenizer.from_pretrained("Lagstill/GPT-2-Tamil")
 if not os.path.exists("misc/"): os.makedirs("misc/")
+hyp = Hyperparameters()
 
 class Chungus:
     def __init__(self) -> None:
@@ -27,65 +20,44 @@ class Chungus:
         file.close()
         self.cursor = 0
     def nextChunk(self):
+        off = hyp.batch*hyp.seq_len
         if self.tokens.nelement() - self.cursor > off+1:
             chunk = self.tokens[self.cursor:self.cursor+off+1]
             self.cursor += off
-            return [chunk[:-1].view(B, T), chunk[1:].view(B, T)]
+            return chunk[:-1].view(hyp.batch, hyp.seq_len), chunk[1:].view(hyp.batch, hyp.seq_len)
         else:
             self.fileId = (self.fileId + 1) % self.filesCount
             self.loadCurFileId()
             return self.nextChunk()
 
-max_lr = 6e-4
-min_lr = max_lr * 0.1
-warmup_steps = 715
-max_steps = 19073 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
-def get_lr(it):
-    #SECTION - https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L349
-    # 1) linear warmup for warmup_iters steps
-    if it < warmup_steps:
-        return max_lr * (it+1) / warmup_steps
-    # 2) if it > lr_decay_iters, return min learning rate
-    if it > max_steps:
-        return min_lr
-    # 3) in between, use cosine decay down to min learning rate
-    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
-    assert 0 <= decay_ratio <= 1
-    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
-    return min_lr + coeff * (max_lr - min_lr)
-
 deviceType = "cuda" if torch.cuda.is_available() else "cpu"
 device = torch.device(deviceType)
 torch.set_float32_matmul_precision("high")
 print("Using", device)
-#NOTE - vocab: 50000, but our gpt has 50257 embeddings
 model = GPT(Config())
 model.to(device)
+optimizers, schedulers = model.create_optimizers(hyp)
 model = torch.compile(model)
-optimizer = model.create_optimizer(weightDecay=0.1, lr=6e-4, device=device)
-optimizer.zero_grad()
 
-chunugs = Chungus()
-x = torch.empty((B, T), dtype=torch.long, device=device)
-y = torch.empty((B, T), dtype=torch.long, device=device)
-off = B*T
-step = 0
+chungus = Chungus()
+x = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
+y = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
 log = open("misc/trace.log", "w+")
-for epoch in range(EPOCH):
-    for step in range(max_steps):
-        if step <= max_steps+1:
-            lr = get_lr(step)
-            for param_group in optimizer.param_groups: param_group["lr"] = lr
-            step += 1
-        lossAcum = 0.0
-        for microStep in range(gradeAccumulationSteps):
-            xChunk,yChunk = chunugs.nextChunk()
-            x.copy_(xChunk)
-            y.copy_(yChunk)
-            with torch.autocast(device_type=deviceType, dtype=torch.bfloat16):
-                pred, loss = model.forward(x, y)
-            loss /= gradeAccumulationSteps
-            lossAcum += loss.detach().cpu().numpy()
-            loss.backward()
-        optimizer.step()
-        log.write(f"{lossAcum}\n")
+optimizer2 = optimizers[1]
+for step in range(hyp.num_iterations+1):
+    xChunk, yChunk = chungus.nextChunk()
+    x.copy_(xChunk)
+    y.copy_(yChunk)
+    with torch.autocast(device_type=deviceType, dtype=torch.bfloat16):
+        pred, loss = model.forward(x, y)
+    loss.backward()
+    loss = loss.detach().cpu().numpy()
+    # momentum warmup for Muon
+    frac = min(step / 300, 1)
+    for group in optimizer2.param_groups:
+        group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
+    for opt, sched in zip(optimizers, schedulers):
+        opt.step()
+        sched.step()
+        opt.zero_grad()
+    log.write(f"{loss}\n")

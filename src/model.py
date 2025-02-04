@@ -1,16 +1,28 @@
 import torch
 import inspect
 import torch.nn as nn
+from muon import Muon
 import torch.nn.functional as F
 from dataclasses import dataclass
+
 
 @dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 2
+    layers:  int = 8
     maxseq:  int = 1024
     vocab:   int = 50257
+@dataclass
+class Hyperparameters:
+    batch = 1
+    seq_len = 1024
+    val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
+    # optimization
+    num_iterations = 1770 # number of iterations to run
+    cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
+    # evaluation and logging
+    val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
@@ -47,7 +59,7 @@ class CasualSelfAttention(nn.Module):
         dim = config.embdim
         assert dim % config.nheads == 0
         #q,k,v weights
-        self.c_attn = nn.Linear(dim, 3*dim)
+        self.c_attn = CastedLinear(dim, 3*dim)
         self.c_proj = CastedLinear(dim, dim)
         self.c_proj.weight.detach().zero_()
         self.rotary = Rotary(dim // config.nheads)
@@ -90,11 +102,9 @@ class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self.transformer = nn.ModuleDict(dict(
-            wte = nn.Embedding(config.vocab, config.embdim),
-            h = nn.ModuleList([Block(config) for _ in range(config.layers)]),
-            ln_f = nn.LayerNorm(config.embdim),
-        ))
+        self.word_embedding = nn.Embedding(next_multiple_of_n(config.vocab, n=128), config.embdim)
+        self.blocks = nn.ModuleList([Block(config) for _ in range(config.layers)])
+        self.ln_f = nn.LayerNorm(config.embdim)
         self.lm_head = CastedLinear(config.embdim, next_multiple_of_n(config.vocab, n=128))
         self.lm_head.weight.detach().zero_()
         self.num_encoding_layers = config.layers // 2
@@ -104,32 +114,36 @@ class GPT(nn.Module):
         B, T = x.size()
         assert T <= self.config.maxseq, "sequence length > max sequence length"
         skip_connections = []
-        x = norm(self.transformer.wte(x))
+        x = norm(self.word_embedding(x))
         for i in range(self.num_encoding_layers):
-            x = self.transformer.h[i](x)
+            x = self.blocks[i](x)
             skip_connections.append(x)
         for i in range(self.num_decoding_layers):
             x = x + self.skip_weights[i] * skip_connections.pop()
-            x = self.transformer.h[self.num_encoding_layers+i](x)
-        x = self.transformer.ln_f(norm(x))
+            x = self.blocks[self.num_encoding_layers+i](x)
+        x = self.ln_f(norm(x))
         logits = self.lm_head(x)
+        logits = 30 * torch.sigmoid(logits.float() / 7.5)
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
-    def create_optimizer(self, weightDecay: float, lr: float, device: str):
-        decayParams = []
-        nonDecayParams = []
-        for name, param in self.named_parameters():
-            if param.requires_grad == False: continue
-            if param.dim() >= 2: decayParams.append(param)
-            else: nonDecayParams.append(param)
-        optimGroups = [
-            {"params": decayParams, "weight_decay": weightDecay},
-            {"params": nonDecayParams, "weight_decay": 0.0},
-        ]
-        fusedAdam = ("fused" in inspect.signature(torch.optim.AdamW).parameters) and (device == "cuda")
-        if fusedAdam: print("Using fused AdamW")
-        return torch.optim.AdamW(optimGroups, lr=lr, betas=(0.9, 0.95), eps=1e-8, fused=fusedAdam)
+    def create_optimizers(self, hyp: Hyperparameters) -> list:
+        hidden_matrix_params = [p for n, p in self.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
+        embed_params = [p for n, p in self.named_parameters() if "embed" in n]
+        scalar_params = [p for p in self.parameters() if p.ndim < 2]
+        head_params = [self.lm_head.weight]
+        adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
+        optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95)
+        optimizers = [optimizer1, optimizer2]
+
+        def get_lr(step: int):
+            t = 1 - step / hyp.num_iterations # time remaining in training
+            assert 1 >= t >= 0
+            w = min(t / hyp.cooldown_frac, 1.0) # 1 -> 0
+            return w * 1.0 + (1 - w) * 0.1
+        schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
+        return optimizers, schedulers
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
         for _ in range(max_new_tokens):

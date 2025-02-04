@@ -12,6 +12,8 @@ deviceType = "cuda" if torch.cuda.is_available() else "cpu"
 device = torch.device(deviceType)
 torch.set_float32_matmul_precision("high")
 print("Using", device)
+from collections import OrderedDict
+
 model = GPT(Config())
 model.to(device)
 model = torch.compile(model)
