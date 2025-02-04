@@ -1,5 +1,4 @@
 import torch
-import inspect
 import torch.nn as nn
 from muon import Muon
 import torch.nn.functional as F
