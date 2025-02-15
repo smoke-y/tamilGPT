@@ -9,7 +9,7 @@ from dataclasses import dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 2
+    layers:  int = 10
     maxseq:  int = 1024
     vocab:   int = 50257
 @dataclass
@@ -18,7 +18,7 @@ class Hyperparameters:
     seq_len = 1024
     chungus_file_stream_len = 65536
     muon_momentum = 0.95
-    max_lr = 6e-2
+    max_lr = 6e-3
     min_lr = max_lr * 0.1
     warmup_steps = 715
     max_steps = 19073
@@ -61,7 +61,7 @@ class CasualSelfAttention(nn.Module):
         self.c_attn = CastedLinear(dim, 3*dim)
         self.c_proj = CastedLinear(dim, dim)
         self.c_proj.weight.detach().zero_()
-        self.rotary = Rotary(dim // config.nheads)
+        self.rotary = Rotary(dim // config.nheads, config.maxseq)
         self.nheads = config.nheads
         self.attn_scale = 0.12
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -101,10 +101,11 @@ class GPT(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.config = config
-        self.word_embedding = nn.Embedding(next_multiple_of_n(config.vocab, n=128), config.embdim)
+        next_multiple = next_multiple_of_n(config.vocab, n=128)
+        self.word_embedding = nn.Embedding(next_multiple, config.embdim)
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.layers)])
         self.ln_f = nn.LayerNorm(config.embdim)
-        self.lm_head = CastedLinear(config.embdim, next_multiple_of_n(config.vocab, n=128))
+        self.lm_head = CastedLinear(config.embdim, next_multiple)
         self.lm_head.weight.detach().zero_()
         self.num_encoding_layers = config.layers // 2
         self.num_decoding_layers = config.layers - self.num_encoding_layers
@@ -131,7 +132,7 @@ class GPT(nn.Module):
         embed_params = [p for n, p in self.named_parameters() if "embed" in n]
         scalar_params = [p for p in self.parameters() if p.ndim < 2]
         head_params = [self.lm_head.weight]
-        adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
+        adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.006), dict(params=scalar_params, lr=0.04)]
         optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
         optimizer2 = Muon(hidden_matrix_params, lr=hyp.max_lr, momentum=hyp.muon_momentum)
         optimizers = [optimizer1, optimizer2]
@@ -149,7 +150,7 @@ class GPT(nn.Module):
         schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
         return optimizers, schedulers
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, top_k=20):
         for _ in range(max_new_tokens):
             idx_cond = idx if idx.size(1) <= self.config.maxseq else idx[:, -self.config.maxseq:]
             logits, _ = self(idx_cond)

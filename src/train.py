@@ -33,7 +33,7 @@ class Chungus:
         if self.tokens.nelement() < off: self.readChunk()
         chunk = self.tokens[:off]
         self.tokens = self.tokens[off:]
-        return chunk[:-1].view(hyp.batch, hyp.seq_len), chunk[1:].view(hyp.batch, hyp.seq_len)
+        return (chunk[:-1]).view(hyp.batch, hyp.seq_len), (chunk[1:]).view(hyp.batch, hyp.seq_len)
     def close(self) -> None: self.file.close()
 
 model = GPT(Config())
@@ -79,6 +79,8 @@ try:
             with torch.no_grad():
                 inp = model.generate(GEN_TENS, 10)
                 gen.write("###\n" + str(tokenizer.decode(inp.detach().squeeze(0).cpu())) + "\n##\n")
-        if step % 10 == 0: save_weights()
+        if step % 50 == 0: save_weights()
 except: traceback.print_exc()
-finally: save_weights()
+finally:
+    save_weights()
+    chungus.close()
