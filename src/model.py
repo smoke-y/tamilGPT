@@ -9,19 +9,19 @@ from dataclasses import dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 10
+    layers:  int = 12
     maxseq:  int = 1024
     vocab:   int = 50257
 @dataclass
 class Hyperparameters:
-    batch = 1
+    batch = 2
     seq_len = 1024
     chungus_file_stream_len = 65536
     muon_momentum = 0.95
-    max_lr = 6e-3
+    max_lr = 3e-3
     min_lr = max_lr * 0.1
     warmup_steps = 715
-    max_steps = 19073
+    max_steps = 19073 * 3
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
