@@ -1,27 +1,27 @@
+import math
 import torch
 import torch.nn as nn
 from muon import Muon
 import torch.nn.functional as F
 from dataclasses import dataclass
 
-
 @dataclass
 class Config:
     nheads:  int = 12
     embdim:  int = 768
-    layers:  int = 8
+    layers:  int = 2
     maxseq:  int = 1024
     vocab:   int = 50257
 @dataclass
 class Hyperparameters:
     batch = 1
     seq_len = 1024
-    val_tokens = 10485760 # how many tokens of validation data? it's important to keep this fixed for consistent comparisons
-    # optimization
-    num_iterations = 1770 # number of iterations to run
-    cooldown_frac = 0.4 # fraction of training spent cooling down the learning rate
-    # evaluation and logging
-    val_loss_every = 125 # every how many steps to evaluate val loss? 0 for only at the end
+    chungus_file_stream_len = 65536
+    muon_momentum = 0.95
+    max_lr = 6e-2
+    min_lr = max_lr * 0.1
+    warmup_steps = 715
+    max_steps = 19073
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
@@ -133,14 +133,19 @@ class GPT(nn.Module):
         head_params = [self.lm_head.weight]
         adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.6), dict(params=scalar_params, lr=0.04)]
         optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
-        optimizer2 = Muon(hidden_matrix_params, lr=0.05, momentum=0.95)
+        optimizer2 = Muon(hidden_matrix_params, lr=hyp.max_lr, momentum=hyp.muon_momentum)
         optimizers = [optimizer1, optimizer2]
 
-        def get_lr(step: int):
-            t = 1 - step / hyp.num_iterations # time remaining in training
-            assert 1 >= t >= 0
-            w = min(t / hyp.cooldown_frac, 1.0) # 1 -> 0
-            return w * 1.0 + (1 - w) * 0.1
+        def get_lr(it):
+            # 1) linear warmup for warmup_iters steps
+            if it < hyp.warmup_steps: return hyp.max_lr * (it+1) / hyp.warmup_steps
+            # 2) if it > lr_decay_iters, return min learning rate
+            if it > hyp.max_steps: return hyp.min_lr
+            # 3) in between, use cosine decay down to min learning rate
+            decay_ratio = (it - hyp.warmup_steps) / (hyp.max_steps - hyp.warmup_steps)
+            assert 0 <= decay_ratio <= 1
+            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+            return hyp.min_lr + coeff * (hyp.max_lr - hyp.min_lr)
         schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
         return optimizers, schedulers
     @torch.no_grad()

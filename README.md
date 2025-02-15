@@ -1,9 +1,11 @@
 # tamilGPT
 
-## nanoGPT
+## MODEL
+
+### nanoGPT
 Implement Andrej Karptathy's <a href="https://youtu.be/l8pRSuU81PU?si=xJg7CMwFCNscqPL9">nanoGPT</a>
 
-## modded-nanoGPT
+### modded-nanoGPT
 <a href="https://github.com/KellerJordan/modded-nanogpt/tree/master">This</a> is a repo trying to train nanoGPT under 3 mins from scratch.
 
 We apply these changes to nanoGPT<br>
@@ -13,5 +15,9 @@ We apply these changes to nanoGPT<br>
 * Uniform and zero weight initialization
 * Skip connections(Encoding/Decoding)
 * <a href="https://kellerjordan.github.io/posts/muon/">Muon Optimizer</a>
+* Embeddings to the closest multiple of 128(2^7)
 
 Now you can train a GPT on a cheap NVIDIA chip under 24 hours.
+
+## DATASET
+We stream ai4bharat's <a href="https://github.com/AI4Bharat/indicnlp_corpus">dataset</a>
