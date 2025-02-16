@@ -1,4 +1,5 @@
 import os
+import math
 import torch
 import traceback
 from model import *
@@ -36,23 +37,37 @@ class Chungus:
         return (chunk[:-1]).view(hyp.batch, hyp.seq_len), (chunk[1:]).view(hyp.batch, hyp.seq_len)
     def close(self) -> None: self.file.close()
 
+max_lr = 6e-4
+min_lr = max_lr * 0.1
+warmup_steps = 715
+max_steps = 19073 * 3
+
 model = GPT(Config())
 model.to(device)
-optimizers, schedulers = model.create_optimizers(hyp)
+optimizer = model.configure_optimizers(weight_decay=0.1, learning_rate=max_lr)
 model = torch.compile(model)
 
 def save_weights() -> None: torch.save(model.state_dict(), "misc/weights.pth")
+def get_lr(it):
+    # 1) linear warmup for warmup_iters steps
+    if it < warmup_steps:
+        return max_lr * (it+1) / warmup_steps
+    # 2) if it > lr_decay_iters, return min learning rate
+    if it > max_steps:
+        return min_lr
+    # 3) in between, use cosine decay down to min learning rate
+    decay_ratio = (it - warmup_steps) / (max_steps - warmup_steps)
+    assert 0 <= decay_ratio <= 1
+    coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
+    return min_lr + coeff * (max_lr - min_lr)
 
 chungus = Chungus()
 x = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
 y = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
 log = open("misc/trace.log", "w+")
 gen = open("misc/gen.log", "w+", encoding="utf8")
-optimizer2 = optimizers[1]
-step = 0
-warmup = True
 try:
-    while True:
+    for step in range(max_steps):
     ################# FORWARD #################
         xChunk, yChunk = chungus.nextChunk()
         x.copy_(xChunk)
@@ -62,20 +77,14 @@ try:
     ################# BACKWARD #################
         loss.backward()
         loss = loss.detach().cpu().numpy()
-        frac = min(step / 300, 1) if warmup else 1
-        for group in optimizer2.param_groups:
-            group["momentum"] = (1 - frac) * 0.85 + frac * 0.95
-        for opt, sched in zip(optimizers, schedulers):
-            opt.step()
-            sched.step()
-            opt.zero_grad()
+        lr = get_lr(step)
+        for param_group in optimizer.param_groups: param_group["lr"] = lr
+        optimizer.step()
+        optimizer.zero_grad()
     ################# LOG/UPDATE/SAVE/GENERATE #################
         log.write(f"{loss}\n")
         print(f"\rcurrent_loss: {loss}", end="")
-        step += 1
-        if step >= 300:
-            warmup = False
-            step = 0
+        if step % 300 == 0:
             with torch.no_grad():
                 inp = model.generate(GEN_TENS, 10)
                 gen.write("###\n" + str(tokenizer.decode(inp.detach().squeeze(0).cpu())) + "\n##\n")

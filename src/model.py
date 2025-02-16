@@ -1,7 +1,5 @@
-import math
 import torch
 import torch.nn as nn
-from muon import Muon
 import torch.nn.functional as F
 from dataclasses import dataclass
 
@@ -17,11 +15,6 @@ class Hyperparameters:
     batch = 2
     seq_len = 1024
     chungus_file_stream_len = 65536
-    muon_momentum = 0.95
-    max_lr = 3e-3
-    min_lr = max_lr * 0.1
-    warmup_steps = 715
-    max_steps = 19073 * 3
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
@@ -60,7 +53,6 @@ class CasualSelfAttention(nn.Module):
         #q,k,v weights
         self.c_attn = CastedLinear(dim, 3*dim)
         self.c_proj = CastedLinear(dim, dim)
-        self.c_proj.weight.detach().zero_()
         self.rotary = Rotary(dim // config.nheads, config.maxseq)
         self.nheads = config.nheads
         self.attn_scale = 0.12
@@ -83,7 +75,6 @@ class MLP(nn.Module):
         hdim = 4 * dim
         self.c_fc = CastedLinear(dim, hdim)
         self.c_proj = CastedLinear(hdim, dim)
-        self.c_proj.weight.detach().zero_()
     def forward(self, x: torch.Tensor):
         x = self.c_fc(x)
         return self.c_proj(F.relu(x).square())
@@ -106,7 +97,6 @@ class GPT(nn.Module):
         self.blocks = nn.ModuleList([Block(config) for _ in range(config.layers)])
         self.ln_f = nn.LayerNorm(config.embdim)
         self.lm_head = CastedLinear(config.embdim, next_multiple)
-        self.lm_head.weight.detach().zero_()
         self.num_encoding_layers = config.layers // 2
         self.num_decoding_layers = config.layers - self.num_encoding_layers
         self.skip_weights = nn.Parameter(torch.ones(self.num_decoding_layers))
@@ -127,28 +117,16 @@ class GPT(nn.Module):
         loss = None
         if groundTruth is not None: loss = nn.functional.cross_entropy(logits.view(-1, logits.size(-1)), groundTruth.view(-1))
         return logits, loss
-    def create_optimizers(self, hyp: Hyperparameters) -> list:
-        hidden_matrix_params = [p for n, p in self.blocks.named_parameters() if p.ndim >= 2 and "embed" not in n]
-        embed_params = [p for n, p in self.named_parameters() if "embed" in n]
-        scalar_params = [p for p in self.parameters() if p.ndim < 2]
-        head_params = [self.lm_head.weight]
-        adam_params = [dict(params=head_params, lr=0.008), dict(params=embed_params, lr=0.006), dict(params=scalar_params, lr=0.04)]
-        optimizer1 = torch.optim.Adam(adam_params, betas=(0.8, 0.95), eps=1e-10, fused=True)
-        optimizer2 = Muon(hidden_matrix_params, lr=hyp.max_lr, momentum=hyp.muon_momentum)
-        optimizers = [optimizer1, optimizer2]
-
-        def get_lr(it):
-            # 1) linear warmup for warmup_iters steps
-            if it < hyp.warmup_steps: return hyp.max_lr * (it+1) / hyp.warmup_steps
-            # 2) if it > lr_decay_iters, return min learning rate
-            if it > hyp.max_steps: return hyp.min_lr
-            # 3) in between, use cosine decay down to min learning rate
-            decay_ratio = (it - hyp.warmup_steps) / (hyp.max_steps - hyp.warmup_steps)
-            assert 0 <= decay_ratio <= 1
-            coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio)) # coeff starts at 1 and goes to 0
-            return hyp.min_lr + coeff * (hyp.max_lr - hyp.min_lr)
-        schedulers = [torch.optim.lr_scheduler.LambdaLR(opt, get_lr) for opt in optimizers]
-        return optimizers, schedulers
+    def configure_optimizers(self, weight_decay, learning_rate):
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        decay_params = [p for _, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for _, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0}
+        ]
+        return torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=True)
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, top_k=20):
         for _ in range(max_new_tokens):
