@@ -3,6 +3,7 @@ import math
 import torch
 import traceback
 from model import *
+from tqdm import tqdm
 from transformers import GPT2Tokenizer
 
 tokenizer = GPT2Tokenizer.from_pretrained("Lagstill/GPT-2-Tamil")
@@ -12,8 +13,6 @@ deviceType = "cuda" if torch.cuda.is_available() else "cpu"
 device = torch.device(deviceType)
 torch.set_float32_matmul_precision("high")
 print("Using", device)
-
-GEN_TENS = torch.tensor(tokenizer.encode("வணக்கம், நான்"), dtype=torch.long, device=device).unsqueeze(0)
 
 class Chungus:
     def __init__(self) -> None:
@@ -65,9 +64,9 @@ chungus = Chungus()
 x = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
 y = torch.empty((hyp.batch, hyp.seq_len), dtype=torch.long, device=device)
 log = open("misc/trace.log", "w+")
-gen = open("misc/gen.log", "w+", encoding="utf8")
+bar = tqdm(range(max_steps))
 try:
-    for step in range(max_steps):
+    for step in bar:
     ################# FORWARD #################
         xChunk, yChunk = chungus.nextChunk()
         x.copy_(xChunk)
@@ -81,14 +80,10 @@ try:
         for param_group in optimizer.param_groups: param_group["lr"] = lr
         optimizer.step()
         optimizer.zero_grad()
-    ################# LOG/UPDATE/SAVE/GENERATE #################
+    ################# LOG/UPDATE/SAVE #################
         log.write(f"{loss}\n")
-        print(f"\rcurrent_loss: {loss}", end="")
-        if step % 300 == 0:
-            with torch.no_grad():
-                inp = model.generate(GEN_TENS, 10)
-                gen.write("###\n" + str(tokenizer.decode(inp.detach().squeeze(0).cpu())) + "\n##\n")
-        if step % 50 == 0: save_weights()
+        bar.set_postfix({"current_loss":loss})
+        if step % 300 == 0: save_weights()
 except: traceback.print_exc()
 finally:
     save_weights()

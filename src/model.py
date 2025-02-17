@@ -12,7 +12,7 @@ class Config:
     vocab:   int = 50257
 @dataclass
 class Hyperparameters:
-    batch = 2
+    batch = 18          #16Gb -> 18, 12Gb -> 12
     seq_len = 1024
 
 class CastedLinear(nn.Linear):
@@ -44,7 +44,7 @@ class Rotary(nn.Module):
 def norm(x: torch.Tensor) -> torch.Tensor: return nn.functional.rms_norm(x, (x.size(-1),))
 def next_multiple_of_n(v: float | int, *, n: int): return next(x for x in range(n, int(v) + 1 + n, n) if x >= v)
 
-class CasualSelfAttention(nn.Module):
+class CausalSelfAttention(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         dim = config.embdim
@@ -81,7 +81,7 @@ class Block(nn.Module):
     def __init__(self, config: Config) -> None:
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.embdim)
-        self.attn = CasualSelfAttention(config)
+        self.attn = CausalSelfAttention(config)
         self.ln_2 = nn.LayerNorm(config.embdim)
         self.mlp = MLP(config)
     def forward(self, x: torch.Tensor) -> torch.Tensor:

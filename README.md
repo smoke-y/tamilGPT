@@ -19,7 +19,7 @@ We apply these changes to nanoGPT<br>
 Now you can train a GPT on a cheap NVIDIA chip.
 
 ## DATASET
-We stream ai4bharat's <a href="https://github.com/AI4Bharat/indicnlp_corpus">dataset</a>
+We clean ai4bharat's <a href="https://github.com/AI4Bharat/indicnlp_corpus">dataset</a>
 
 ## FAILED EXPERIMENTS
 * Zero weight initialization for lm_head and c_proj<br>
