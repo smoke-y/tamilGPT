@@ -17,11 +17,11 @@ GEN_TENS = torch.tensor(tokenizer.encode("வணக்கம், நான்"),
 
 class Chungus:
     def __init__(self) -> None:
-        self.file = open("data/ta.txt", "r", encoding="utf8")
+        self.file = open("data/ta_clean.txt", "r", encoding="utf8")
         self.tokens = None
         self.readChunk()
     def readChunk(self) -> None:
-        read_len = hyp.chungus_file_stream_len * hyp.batch + 1
+        read_len = (hyp.seq_len * hyp.batch) + hyp.seq_len
         chunk = self.file.read(read_len)
         if len(chunk) < read_len:
             self.file.seek(0)
@@ -39,8 +39,8 @@ class Chungus:
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 715
-max_steps = 19073 * 3
+max_steps = 580000000 // (hyp.seq_len * hyp.batch)
+warmup_steps = int((3/100) * max_steps)
 
 model = GPT(Config())
 model.to(device)

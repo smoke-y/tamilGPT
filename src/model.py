@@ -14,7 +14,6 @@ class Config:
 class Hyperparameters:
     batch = 2
     seq_len = 1024
-    chungus_file_stream_len = 65536
 
 class CastedLinear(nn.Linear):
     def __init__(self, in_features: int, out_features: int): super().__init__(in_features, out_features, bias=False)
