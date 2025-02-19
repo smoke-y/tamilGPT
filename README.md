@@ -7,6 +7,7 @@ _/  |_ _____     _____  |__||  |   /  _____/ \______   \\__    ___/
             \/       \/                   \/                        
 ```
 
+Training a GPT in 4 hours on tamil tokens.
 
 ## MODEL
 
@@ -26,6 +27,8 @@ Now you can train a GPT on a cheap NVIDIA chip.
 
 ## GETTING STARTED
 Download ai4bharat's <a href="https://github.com/AI4Bharat/indicnlp_corpus">dataset</a>(ta.txt) and place it under ```data/```. Run ```src/clean.py``` and finally ```src/train.py```. Modify batch size based on your VRAM(```src/model.py```).
+
+You can find the weights <a href="https://huggingface.co/smoke-y/tamilGPT">here</a>.
 
 ## FAILED EXPERIMENT
 * Zero weight initialization for lm_head and c_proj<br>
