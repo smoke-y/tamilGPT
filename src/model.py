@@ -12,7 +12,7 @@ class Config:
     vocab:   int = 50257
 @dataclass
 class Hyperparameters:
-    batch = 18          #16Gb -> 18, 12Gb -> 12
+    batch = 11
     seq_len = 1024
 
 class CastedLinear(nn.Linear):

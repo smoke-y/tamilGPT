@@ -20,7 +20,7 @@ class Chungus:
         self.tokens = None
         self.readChunk()
     def readChunk(self) -> None:
-        read_len = (hyp.seq_len * hyp.batch) + hyp.seq_len
+        read_len = hyp.seq_len * hyp.batch * 5
         chunk = self.file.read(read_len)
         if len(chunk) < read_len:
             self.file.seek(0)
